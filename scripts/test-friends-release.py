@@ -10,6 +10,17 @@ spec.loader.exec_module(module)
 
 
 class ChannelTests(unittest.TestCase):
+    def test_workflow_keeps_signing_in_fork_tag_release(self):
+        source = (ROOT / '.github/workflows/friends-release.yml').read_text(encoding='utf-8')
+        self.assertIn("tags: ['friends-v*']", source)
+        self.assertIn("if: github.repository == 'yyqdbngt/x-harness-rs'", source)
+        self.assertNotIn('pull_request_target', source)
+        self.assertNotIn('--clobber', source)
+        for name in ['PRIVATE_KEY', 'PASSWORD', 'PUBLIC_KEY']:
+            self.assertIn('secrets.XHARNESS_FRIENDS_' + name, source)
+        self.assertLess(source.index('verify-updater-package.mjs'), source.index('gh release create'))
+        self.assertLess(source.index('gh release upload'), source.index('--draft=false --latest'))
+
     def test_bootstrap_and_rolling_channel(self):
         result = module.plan(module.REPOSITORY, 'friends-v0.2.1', [])
         self.assertEqual(result['versions'], ['0.2.0', '0.2.1'])
