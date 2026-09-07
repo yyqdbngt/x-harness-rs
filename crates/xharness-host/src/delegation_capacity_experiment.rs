@@ -71,7 +71,14 @@ impl ModelProvider for Fixture {
         _cancel: CancellationToken,
     ) -> Result<ProviderStream, ProviderError> {
         if request.step == 1 {
-            let task = request.messages.last().unwrap().content.clone();
+            let task = request
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .strip_prefix("Agent parent (agent-message):\n")
+                .expect("fixture must traverse Host delegation message admission")
+                .to_owned();
             self.first_steps
                 .lock()
                 .unwrap()
@@ -208,7 +215,6 @@ async fn parent(host: &BasicHost) {
     host.session_create(&json!({"sessionId":"parent"}))
         .await
         .unwrap();
-    host.set_dispatch_paused("parent", true).await.unwrap();
 }
 async fn start(host: &BasicHost, task: &str) -> String {
     host.execute_agent(
@@ -278,6 +284,9 @@ async fn throughput() {
         admissions.insert(task.clone(), Instant::now());
         ids.push(start(&host, &task).await);
     }
+    // Paused parents cannot create children. Pause only after all admissions;
+    // this isolated Host does not start the background settlement listener.
+    host.set_dispatch_paused("parent", true).await.unwrap();
     settled(&host, &ids).await;
     let elapsed = begin.elapsed().as_secs_f64() * 1000.0;
     assert_eq!(fixture.model.active.load(Ordering::SeqCst), 0);
