@@ -1,0 +1,40 @@
+name: Delegation capacity experiment
+
+on:
+  push:
+    branches: [btlqql/delegation-capacity-experiment]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - name: Measure isolated scheduler fixtures (no API credentials)
+        run: python scripts/run-delegation-capacity-experiment.py
+      - name: Existing Host and Agent regressions
+        run: cargo test --locked -p xharness-host -p xharness-agent --all-targets
+      - run: cargo clippy --locked -p xharness-host --all-targets -- -D warnings
+      - name: Upload measurements and failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: delegation-capacity-${{ matrix.os }}
+          path: dist/delegation-capacity-evidence/
+          if-no-files-found: warn
