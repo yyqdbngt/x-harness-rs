@@ -576,6 +576,10 @@ impl BasicHost {
 }
 
 #[cfg(test)]
+#[path = "delegation_capacity_experiment.rs"]
+mod capacity_experiment;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{AgentRuntime, DurableLoopAgentRuntime, HostConfig, NoTools};

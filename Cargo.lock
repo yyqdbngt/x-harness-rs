@@ -3263,6 +3263,7 @@ dependencies = [
  "xharness-prompt",
  "xharness-schedule",
  "xharness-session",
+ "xharness-session-jsonl",
  "xharness-token",
  "xharness-tools",
 ]

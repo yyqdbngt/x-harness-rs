@@ -807,6 +807,8 @@ impl TurnRequestFactory for DurableTurnFactory {
 /// The Web DTO cache is not authoritative. A later Host-store migration can
 /// rebuild it from this runtime's Session log without changing [`AgentRuntime`].
 pub struct DurableLoopAgentRuntime {
+    #[cfg(test)]
+    experiment_slots: Arc<tokio::sync::Semaphore>,
     models: Arc<StdRwLock<ModelRegistry>>,
     default_route: ModelRoute,
     store: Arc<dyn Store>,
@@ -896,6 +898,8 @@ impl DurableLoopAgentRuntime {
         });
         let registry = Arc::new(AgentRegistry::new(Arc::clone(&store), leases));
         Ok(Self {
+            #[cfg(test)]
+            experiment_slots: Arc::clone(&factory.delegation_slots),
             models,
             default_route,
             store,
@@ -908,6 +912,15 @@ impl DurableLoopAgentRuntime {
             compaction,
             schedules: None,
         })
+    }
+
+    /// Test-only capacity injection before any agents have been activated.
+    #[cfg(test)]
+    pub(crate) fn with_experiment_capacity(self, capacity: usize) -> Self {
+        assert!(matches!(capacity, 2 | 4 | 8));
+        assert_eq!(self.experiment_slots.available_permits(), 2);
+        self.experiment_slots.add_permits(capacity - 2);
+        self
     }
 
     pub fn with_debug(self, debug: DebugRecorder) -> Self {
