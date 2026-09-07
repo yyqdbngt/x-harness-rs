@@ -130,7 +130,7 @@ def run(output, binary=None):
             group = [r for r in rows if r.get("profile") == profile and r["capacity"] == n]
             summary.append({"profile": profile, "capacity": n, "samples": len(group), **{
                 "median_" + key: statistics.median(r[key] for r in group)
-                for key in ("elapsed_ms", "first_step_wait_p95_ms", "peak_rss_bytes", "cpu_seconds")
+                for key in ("elapsed_ms", "first_step_wait_p95_ms", "first_output_p95_ms", "peak_rss_bytes", "cpu_seconds")
                 if all(key in r for r in group)}})
     (output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print("SUMMARY " + json.dumps(summary), flush=True)

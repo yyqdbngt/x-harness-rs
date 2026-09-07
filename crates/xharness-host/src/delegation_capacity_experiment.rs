@@ -41,6 +41,7 @@ struct Fixture {
     model: Arc<Counter>,
     tool: Arc<Counter>,
     first_steps: Mutex<BTreeMap<String, Instant>>,
+    first_outputs: Arc<Mutex<BTreeMap<String, Instant>>>,
     provider_slots: Arc<tokio::sync::Semaphore>,
     gate: CancellationToken,
 }
@@ -51,6 +52,7 @@ impl Fixture {
             model: Arc::default(),
             tool: Arc::default(),
             first_steps: Mutex::default(),
+            first_outputs: Arc::default(),
             provider_slots: Arc::new(tokio::sync::Semaphore::new(if profile == "provider_cap2" {
                 2
             } else {
@@ -70,7 +72,7 @@ impl ModelProvider for Fixture {
         request: ProviderRequest,
         _cancel: CancellationToken,
     ) -> Result<ProviderStream, ProviderError> {
-        if request.step == 1 {
+        let first_task = if request.step == 1 {
             let task = request
                 .messages
                 .last()
@@ -82,8 +84,12 @@ impl ModelProvider for Fixture {
             self.first_steps
                 .lock()
                 .unwrap()
-                .insert(task, Instant::now());
-        }
+                .insert(task.clone(), Instant::now());
+            Some(task)
+        } else {
+            None
+        };
+        let first_outputs = self.first_outputs.clone();
         let permit = self.provider_slots.clone().acquire_owned().await.unwrap();
         let active = self.model.enter();
         let tools = self.profile == "tool_wait";
@@ -96,6 +102,9 @@ impl ModelProvider for Fixture {
                 gate.cancelled().await;
             } else {
                 tokio::time::sleep(Duration::from_millis(if tools { 20 } else { 250 })).await;
+            }
+            if let Some(task) = first_task {
+                first_outputs.lock().unwrap().insert(task, Instant::now());
             }
             if tools && request.step == 1 {
                 yield Ok(ProviderEvent::ToolCallDelta {
@@ -355,12 +364,21 @@ async fn throughput() {
         .map(|(task, start)| start.duration_since(admissions[task]).as_secs_f64() * 1000.0)
         .collect();
     assert_eq!(waits.len(), 12);
+    let mut first_outputs: Vec<f64> = fixture
+        .first_outputs
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(task, time)| time.duration_since(admissions[task]).as_secs_f64() * 1000.0)
+        .collect();
+    assert_eq!(first_outputs.len(), 12);
     println!(
         "CAPACITY_RESULT {}",
         json!({
             "kind":"throughput", "capacity":n, "profile":profile, "tasks":12,
             "elapsed_ms":elapsed, "first_step_wait_p50_ms":percentile(&mut waits, 50),
             "first_step_wait_p95_ms":percentile(&mut waits, 95), "peak_model_streams":peak,
+            "first_output_p95_ms":percentile(&mut first_outputs, 95),
             "peak_tools":fixture.tool.peak.load(Ordering::SeqCst), "settlements_after_reopen":12,
             "fixture_root":root,
         })
