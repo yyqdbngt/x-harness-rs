@@ -26,6 +26,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - run: python -B scripts/test-delegation-capacity-runner.py
       - name: Measure isolated scheduler fixtures (no API credentials)
         run: python scripts/run-delegation-capacity-experiment.py
       - name: Existing Host and Agent regressions
@@ -37,4 +38,11 @@ jobs:
         with:
           name: delegation-capacity-${{ matrix.os }}
           path: dist/delegation-capacity-evidence/
+          if-no-files-found: warn
+      - name: Upload precompiled Windows fixture (not an App installer)
+        if: always() && matrix.os == 'windows-2025'
+        uses: actions/upload-artifact@v7
+        with:
+          name: delegation-capacity-windows-test-binary
+          path: dist/delegation-capacity-test.exe
           if-no-files-found: warn

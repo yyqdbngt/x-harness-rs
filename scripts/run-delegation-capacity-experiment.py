@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import statistics
+import shutil
 import subprocess
 import sys
 import time
@@ -78,20 +79,26 @@ def sample(binary, test, log):
     print(json.dumps({**rows[0], **memory, "process_wall_ms": (time.monotonic() - started) * 1000}))
 
 
-def run(output):
+def run(output, binary=None):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    command = ["cargo", "test", "--locked", "-p", "xharness-host", "--lib", "--no-run", "--message-format=json"]
-    build = subprocess.run(command, text=True, encoding="utf-8", stdout=subprocess.PIPE, timeout=1200)
-    (output / "build.jsonl").write_text(build.stdout, encoding="utf-8")
-    build.check_returncode()
-    artifacts = [json.loads(line) for line in build.stdout.splitlines() if line.startswith("{")]
-    binaries = [entry["executable"] for entry in artifacts
-                if entry.get("reason") == "compiler-artifact" and entry.get("executable")
-                and entry.get("target", {}).get("name") == "xharness_host"
-                and entry.get("profile", {}).get("test")]
-    if len(binaries) != 1:
-        raise RuntimeError(f"expected one Host test binary, got {binaries}")
+    if binary is None:
+        command = ["cargo", "test", "--locked", "-p", "xharness-host", "--lib", "--no-run", "--message-format=json"]
+        build = subprocess.run(command, text=True, encoding="utf-8", stdout=subprocess.PIPE, timeout=1200)
+        (output / "build.jsonl").write_text(build.stdout, encoding="utf-8")
+        build.check_returncode()
+        artifacts = [json.loads(line) for line in build.stdout.splitlines() if line.startswith("{")]
+        binaries = [entry["executable"] for entry in artifacts
+                    if entry.get("reason") == "compiler-artifact" and entry.get("executable")
+                    and entry.get("target", {}).get("name") == "xharness_host"
+                    and entry.get("profile", {}).get("test")]
+        if len(binaries) != 1:
+            raise RuntimeError(f"expected one Host test binary, got {binaries}")
+        binary = binaries[0]
+        if os.name == "nt":
+            # Allow the developer PC to repeat this experiment without compiling Rust.
+            shutil.copy2(binary, output.parent / "delegation-capacity-test.exe")
+    binary = str(Path(binary).resolve(strict=True))
     rows = []
     jobs = [(n, "safety", 0) for n in (2, 4, 8)]
     for repetition, order in enumerate(((2, 4, 8), (4, 8, 2), (8, 2, 4)), 1):
@@ -102,7 +109,7 @@ def run(output):
         env = dict(os.environ, XHARNESS_TEST_CAPACITY=str(n), XHARNESS_TEST_PROFILE=profile)
         method = "cancellation_and_admission" if profile == "safety" else "throughput"
         test = f"delegation::capacity_experiment::{method}"
-        result = subprocess.run([sys.executable, __file__, "--sample-binary", binaries[0],
+        result = subprocess.run([sys.executable, __file__, "--sample-binary", binary,
                                  "--test", test, "--log", str(output / f"{label}.log")],
                                 env=env, text=True, encoding="utf-8", capture_output=True, timeout=150)
         if result.returncode:
@@ -132,6 +139,7 @@ def run(output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default="dist/delegation-capacity-evidence")
+    parser.add_argument("--binary", help="Use a trusted precompiled Host test binary; never invokes cargo")
     parser.add_argument("--sample-binary")
     parser.add_argument("--test")
     parser.add_argument("--log")
@@ -139,4 +147,4 @@ if __name__ == "__main__":
     if args.sample_binary:
         sample(args.sample_binary, args.test, args.log)
     else:
-        run(args.output)
+        run(args.output, args.binary)
