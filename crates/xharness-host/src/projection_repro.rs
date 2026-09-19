@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use xharness_session::{RequestHeader, SessionHeader, SessionStore};
+use xharness_session::{RequestHeader, SessionHeader, Store};
 use xharness_session_jsonl::JsonlSessionStore;
 
 const INPUT_LIMIT: u64 = 64 * 1024 * 1024;
