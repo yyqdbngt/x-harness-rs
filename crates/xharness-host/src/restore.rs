@@ -1184,6 +1184,10 @@ mod projection_allocation_tests {
     }
 }
 
+#[cfg(feature = "projection-repro")]
+#[path = "projection_repro.rs"]
+pub mod projection_repro;
+
 fn restored_web_event(
     event: &LoggedEvent,
     route: &ModelRoute,

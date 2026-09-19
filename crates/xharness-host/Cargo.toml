@@ -6,7 +6,16 @@ license.workspace = true
 repository.workspace = true
 description = "Reusable provider-neutral host control plane for XHarness"
 
+[features]
+projection-repro = ["dep:xharness-session-jsonl"]
+
+[[bin]]
+name = "xharness-projection-repro"
+path = "src/bin/xharness-projection-repro.rs"
+required-features = ["projection-repro"]
+
 [dependencies]
+xharness-session-jsonl = { path = "../xharness-session-jsonl", optional = true }
 base64 = "0.22"
 xharness-attachments = { path = "../xharness-attachments" }
 async-stream.workspace = true

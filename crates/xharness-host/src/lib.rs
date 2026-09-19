@@ -23,6 +23,8 @@ mod permission_tests;
 mod preference_settings;
 mod questions;
 mod restore;
+#[cfg(feature = "projection-repro")]
+pub use restore::projection_repro;
 mod rpc;
 mod runtime;
 mod state;

@@ -1,0 +1,46 @@
+name: Offline projection reproducer
+on:
+  push:
+    branches: [btlqql/offline-projection-repro]
+  pull_request:
+    paths:
+      - 'crates/xharness-host/src/projection_repro.rs'
+      - 'crates/xharness-host/src/bin/xharness-projection-repro.rs'
+      - 'scripts/*projection-repro*'
+      - '.github/workflows/offline-projection-repro.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.1'
+      - uses: Swatinem/rust-cache@v2
+      - name: Test isolated projection entry
+        run: cargo test --locked --release -p xharness-host --features projection-repro projection_repro --lib
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+      - name: Build dedicated executable (no private input)
+        run: cargo build --locked --release -p xharness-host --features projection-repro --bin xharness-projection-repro
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
+      - name: Synthetic smoke and immutable artifact manifest
+        shell: pwsh
+        run: |
+          & ./target/release/xharness-projection-repro.exe --synthetic --output "$env:RUNNER_TEMP/repro-smoke" --rounds 10 --seconds 120
+          if ($LASTEXITCODE) { throw 'Synthetic smoke failed' }
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/xharness-projection-repro.exe dist/
+          Copy-Item target/release/xharness_projection_repro.pdb dist/ -ErrorAction Stop
+          @{ source=(git rev-parse HEAD); projectionBaseline='a98d050f10a3f7c3f836d614e79fbf116aeafc8a'; sha256=(Get-FileHash dist/xharness-projection-repro.exe).Hash; rust='1.98.1'; mode='offline-no-host-no-models-no-tools' } | ConvertTo-Json | Set-Content dist/manifest.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-projection-repro
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
