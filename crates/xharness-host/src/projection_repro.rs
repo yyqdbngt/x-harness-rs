@@ -21,6 +21,8 @@ struct Options {
     rounds: usize,
     workers: usize,
     seconds: u64,
+    input_limit: u64,
+    load_only: bool,
 }
 impl Options {
     fn parse(args: Vec<String>) -> Result<Self, String> {
@@ -30,6 +32,8 @@ impl Options {
             rounds: 100,
             workers: 1,
             seconds: 120,
+            input_limit: INPUT_LIMIT,
+            load_only: false,
         };
         let mut synthetic = false;
         let mut seen = std::collections::BTreeSet::new();
@@ -42,6 +46,10 @@ impl Options {
                 synthetic = true;
                 continue;
             }
+            if key == "--load-only" {
+                result.load_only = true;
+                continue;
+            }
             let value = args.next().ok_or("missing option value")?;
             match key.as_str() {
                 "--journal" => result.journal = Some(value.into()),
@@ -49,11 +57,21 @@ impl Options {
                 "--rounds" => result.rounds = value.parse().map_err(|_| "invalid rounds")?,
                 "--workers" => result.workers = value.parse().map_err(|_| "invalid workers")?,
                 "--seconds" => result.seconds = value.parse().map_err(|_| "invalid seconds")?,
+                "--max-input-mib" => {
+                    let mib: u64 = value.parse().map_err(|_| "invalid input budget")?;
+                    if !(1..=2048).contains(&mib) {
+                        return Err("input budget must be 1..2048 MiB".into());
+                    }
+                    result.input_limit = mib * 1024 * 1024;
+                }
                 _ => return Err("unknown option".into()),
             }
         }
         if synthetic == result.journal.is_some() {
             return Err("select exactly one of --synthetic or --journal".into());
+        }
+        if result.load_only && result.journal.is_none() {
+            return Err("load-only requires a journal".into());
         }
         if !result.output.is_absolute()
             || !(1..=10000).contains(&result.rounds)
@@ -76,11 +94,11 @@ fn valid_id(id: &str) -> bool {
 
 // Only a copy is passed to the store (whose recovery may truncate an incomplete
 // tail). This function never opens the original with write permission.
-fn stage(input: &Path, output: &Path) -> Result<(String, String), String> {
+fn stage(input: &Path, output: &Path, input_limit: u64) -> Result<(String, String), String> {
     let mut source = File::open(input).map_err(|_| "cannot open source journal")?;
     let before = source.metadata().map_err(|_| "cannot inspect source")?;
-    if !before.is_file() || before.len() > INPUT_LIMIT {
-        return Err("journal exceeds 64 MiB input budget or is not a file".into());
+    if !before.is_file() || before.len() > input_limit {
+        return Err("journal exceeds selected input budget or is not a file".into());
     }
     let staging = output.join("input.jsonl");
     let mut copy = OpenOptions::new()
@@ -97,7 +115,7 @@ fn stage(input: &Path, output: &Path) -> Result<(String, String), String> {
             break;
         }
         total += count as u64;
-        if total > INPUT_LIMIT {
+        if total > input_limit {
             return Err("growing journal exceeds input budget".into());
         }
         hash.update(&buffer[..count]);
@@ -199,7 +217,7 @@ fn checkpoint(file: &Mutex<File>, worker: usize, phase: &str, seq: u64) -> Resul
 
 pub async fn run_cli(args: Vec<String>) -> Result<(), String> {
     if args == ["--help"] {
-        println!("--synthetic | --journal FILE; --output NEW_ABSOLUTE_DIR [--rounds 100] [--workers 1] [--seconds 120]");
+        println!("--synthetic | --journal FILE; --output NEW_ABSOLUTE_DIR [--rounds 100] [--workers 1] [--seconds 120] [--max-input-mib 64] [--load-only]");
         return Ok(());
     }
     let options = Options::parse(args)?;
@@ -211,7 +229,7 @@ pub async fn run_cli(args: Vec<String>) -> Result<(), String> {
     ));
     checkpoint(&progress, 0, "load", 0)?;
     let (session, source_hash) = if let Some(input) = &options.journal {
-        let (id, hash) = stage(input, &options.output)?;
+        let (id, hash) = stage(input, &options.output, options.input_limit)?;
         let store = JsonlSessionStore::new(options.output.join("store"))
             .map_err(|_| "isolated store open failed")?
             .for_runtime();
@@ -224,6 +242,17 @@ pub async fn run_cli(args: Vec<String>) -> Result<(), String> {
     } else {
         (synthetic()?, None)
     };
+    if options.load_only {
+        let result = json!({"mode":"load-only","sourceSha256":source_hash,"events":session.events().len(),"models":false,"tools":false,"complete":true});
+        fs::write(
+            options.output.join("result.json"),
+            serde_json::to_vec_pretty(&result).map_err(|_| "result encoding failed")?,
+        )
+        .map_err(|_| "result write failed")?;
+        checkpoint(&progress, 0, "load-complete", session.events().len() as u64)?;
+        println!("projection-repro: journal loaded; no projection/models/tools");
+        return Ok(());
+    }
     if session.events().is_empty() {
         return Err("empty journal".into());
     }
@@ -326,14 +355,15 @@ mod tests {
         fs::write(&source, bytes).unwrap();
         let output = temp.join("run");
         fs::create_dir(&output).unwrap();
-        let (id, hash) = stage(&source, &output).unwrap();
+        assert!(stage(&source, &output, 1).is_err());
+        let (id, hash) = stage(&source, &output, INPUT_LIMIT).unwrap();
         assert_eq!(id, "session-copy-test");
         assert_eq!(hash, format!("{:x}", Sha256::digest(bytes)));
         let recovery = output.join("store/session-copy-test.jsonl");
         fs::write(recovery, b"recovery changed only its own copy").unwrap();
         assert_eq!(fs::read(&source).unwrap(), bytes);
         assert_eq!(fs::read(output.join("input.jsonl")).unwrap(), bytes);
-        assert!(stage(&source, &output).is_err());
+        assert!(stage(&source, &output, INPUT_LIMIT).is_err());
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -351,7 +381,7 @@ mod tests {
             let output = temp.join(format!("run-{index}"));
             fs::write(&source, bytes).unwrap();
             fs::create_dir(&output).unwrap();
-            assert!(stage(&source, &output).is_err());
+            assert!(stage(&source, &output, INPUT_LIMIT).is_err());
             assert_eq!(fs::read(source).unwrap(), *bytes);
         }
         fs::remove_dir_all(temp).unwrap();
@@ -369,6 +399,73 @@ mod tests {
         ] {
             assert!(Options::parse(args.into_iter().map(str::to_owned).collect()).is_err());
         }
+    }
+    #[test]
+    fn explicit_large_load_budget_is_bounded() {
+        let temp = test_directory("options");
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "--journal".to_owned(),
+                "input".to_owned(),
+                "--output".to_owned(),
+                temp.to_string_lossy().into_owned(),
+            ];
+            args.extend(extra.iter().map(|s| s.to_string()));
+            Options::parse(args)
+        };
+        assert_eq!(parse(&[]).unwrap().input_limit, INPUT_LIMIT);
+        let large = parse(&["--max-input-mib", "1024", "--load-only"]).unwrap();
+        assert_eq!(large.input_limit, 1024 * 1024 * 1024);
+        assert!(large.load_only);
+        for limit in ["0", "2049", "18446744073709551615"] {
+            assert!(parse(&["--max-input-mib", limit]).is_err());
+        }
+        assert!(Options::parse(vec!["--synthetic".into(), "--load-only".into()]).is_err());
+        fs::remove_dir(temp).unwrap();
+    }
+    #[tokio::test]
+    async fn load_only_uses_real_store_and_preserves_original() {
+        let temp = test_directory("load-only");
+        let store = JsonlSessionStore::new(temp.join("source")).unwrap();
+        let initial = store.create(SessionHeader::new("load-only")).await.unwrap();
+        store
+            .append(
+                "load-only",
+                initial.revision(),
+                vec![
+                    EventData::TurnStart { turn: 1 }.into(),
+                    EventData::TurnEnd {
+                        turn: 1,
+                        reason: TurnEndReason::Completed,
+                    }
+                    .into(),
+                ],
+            )
+            .await
+            .unwrap();
+        store.flush("load-only").await.unwrap();
+        let source = temp.join("source/load-only.jsonl");
+        let original = fs::read(&source).unwrap();
+        let output = temp.join("loaded");
+        run_cli(vec![
+            "--journal".into(),
+            source.to_string_lossy().into_owned(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+            "--load-only".into(),
+            "--max-input-mib".into(),
+            "1024".into(),
+        ])
+        .await
+        .unwrap();
+        let result: Value =
+            serde_json::from_slice(&fs::read(output.join("result.json")).unwrap()).unwrap();
+        assert_eq!(result["complete"], true);
+        assert_eq!(result["events"], 2);
+        assert_eq!(result["models"], false);
+        assert_eq!(fs::read(&source).unwrap(), original);
+        drop(store);
+        fs::remove_dir_all(temp).unwrap();
     }
     #[test]
     fn synthetic_exercises_real_projection_and_counting() {

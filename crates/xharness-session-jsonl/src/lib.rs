@@ -1067,11 +1067,15 @@ fn parse_reader(
     mut reader: impl BufRead,
     runtime_audit_view: bool,
 ) -> Result<LoadedFile, StoreError> {
+    #[cfg(feature = "offline-load-trace")]
+    let mut load_trace = offline_load_trace()?;
     let mut line = Vec::new();
     let read = read_record(&mut reader, &mut line, path)?;
     if read == 0 {
         return Err(corrupt(path, 1, "missing header record"));
     }
+    #[cfg(feature = "offline-load-trace")]
+    offline_load_checkpoint(&mut load_trace, "header", 1, 0, read)?;
     let header_record: HeaderRecord = serde_json::from_slice(&line)
         .map_err(|e| corrupt(path, 1, format!("invalid header JSON: {e}")))?;
     validate_header_record(path, session_id, &header_record)?;
@@ -1091,6 +1095,8 @@ fn parse_reader(
         }
         line_number += 1;
         let terminated = line.ends_with(b"\n");
+        #[cfg(feature = "offline-load-trace")]
+        offline_load_checkpoint(&mut load_trace, "batch", line_number, valid_len, count)?;
         match serde_json::from_slice::<BatchRecord>(&line) {
             Ok(mut record) => {
                 for event in &record.events {
@@ -1125,8 +1131,12 @@ fn parse_reader(
             }
         }
     }
+    #[cfg(feature = "offline-load-trace")]
+    offline_load_checkpoint(&mut load_trace, "lifecycle", line_number, valid_len, 0)?;
     let session = Session::restore(header, revision, events)
         .map_err(|e| corrupt(path, line_number, format!("invalid event log: {e}")))?;
+    #[cfg(feature = "offline-load-trace")]
+    offline_load_checkpoint(&mut load_trace, "complete", line_number, valid_len, 0)?;
     Ok(LoadedFile {
         session,
         valid_len,
@@ -1134,6 +1144,74 @@ fn parse_reader(
         estimated_bytes,
         audit_offsets: Arc::new(audit_offsets),
     })
+}
+
+// Only compiled into the opt-in offline diagnostic build. One fixed-size last
+// checkpoint, no content/path/credentials. Each invocation uses a fresh path.
+#[cfg(feature = "offline-load-trace")]
+fn offline_load_trace() -> Result<Option<File>, StoreError> {
+    std::env::var_os("XHARNESS_OFFLINE_LOAD_TRACE")
+        .map(|path| {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|e| backend_message(format!("offline checkpoint open failed: {e}")))
+        })
+        .transpose()
+}
+
+#[cfg(feature = "offline-load-trace")]
+fn offline_load_checkpoint(
+    file: &mut Option<File>,
+    phase: &str,
+    line: usize,
+    offset: u64,
+    bytes: usize,
+) -> Result<(), StoreError> {
+    if let Some(file) = file {
+        let mut write = || -> std::io::Result<()> {
+            file.seek(SeekFrom::Start(0))?;
+            writeln!(
+                file,
+                "{{\"phase\":\"{phase}\",\"line\":{line},\"offset\":{offset},\"bytes\":{bytes}}}"
+            )?;
+            let end = file.stream_position()?;
+            file.set_len(end)?;
+            file.flush()
+        };
+        write().map_err(|e| backend_message(format!("offline checkpoint write failed: {e}")))?;
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "offline-load-trace"))]
+#[test]
+fn offline_checkpoint_is_bounded_and_write_failure_is_not_hidden() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("xh-load-checkpoint-{}-{nonce}", std::process::id()));
+    let mut file = Some(
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap(),
+    );
+    offline_load_checkpoint(&mut file, "lifecycle", 99999, 9999999, 999999).unwrap();
+    offline_load_checkpoint(&mut file, "batch", 2, 10, 20).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(value["line"], 2);
+    assert_eq!(value["phase"], "batch");
+    assert!(fs::metadata(&path).unwrap().len() < 128);
+    drop(file);
+    let mut readonly = Some(File::open(&path).unwrap());
+    assert!(offline_load_checkpoint(&mut readonly, "batch", 3, 30, 10).is_err());
+    drop(readonly);
+    fs::remove_file(path).unwrap();
 }
 
 fn validate_header_record(

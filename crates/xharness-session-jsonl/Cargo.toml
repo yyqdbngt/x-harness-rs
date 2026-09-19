@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "Crash-tolerant JSONL persistence for XHarness sessions"
 
+[features]
+offline-load-trace = []
+
 [dependencies]
 async-trait.workspace = true
 fs2 = "0.4.3"

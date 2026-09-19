@@ -29,6 +29,10 @@ jobs:
         run: cargo build --locked --release -p xharness-host --features projection-repro --bin xharness-projection-repro
         env:
           CARGO_PROFILE_RELEASE_DEBUG: '1'
+      - name: Test offline loader checkpoints
+        run: cargo test --locked --release -p xharness-session-jsonl --features offline-load-trace offline_checkpoint --lib
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: '1'
       - name: Synthetic smoke and immutable artifact manifest
         shell: pwsh
         run: |
