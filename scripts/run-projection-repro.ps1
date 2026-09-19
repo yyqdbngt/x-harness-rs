@@ -11,11 +11,13 @@ param(
     [ValidateRange(1,3600)][int]$Seconds = 120,
     [ValidateRange(256,8192)][int]$MemoryLimitMiB = 2048,
     [switch]$PageHeap,
+    [switch]$CaptureSelfTest,
     [string]$Debugger,
     [string]$SymbolDirectory
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This supervisor is Windows-only' }
+if ($CaptureSelfTest -and (-not $PageHeap -or $PSCmdlet.ParameterSetName -ne 'Synthetic')) { throw 'Capture self-test requires PageHeap and synthetic input only' }
 $binaryFile = Get-Item -LiteralPath $Binary
 $expected = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 $hash = (Get-FileHash -LiteralPath $binaryFile.FullName).Hash
@@ -58,9 +60,11 @@ try {
             Start-Sleep -Milliseconds 200
         }
         $dumpPath = (Join-Path $runDir 'first-fault.dmp').Replace('\','/')
-        $capture = '.echo PROJECTION_NATIVE_FAULT; .exr -1; .ecxr; kv; .dump /ma \"' + $dumpPath + '\"; q'
+        $capture = '.echo PROJECTION_NATIVE_FAULT; .exr -1; .ecxr; r; kv; .dump /ma \"' + $dumpPath + '\"; q'
         $commands = @('!gflag', '!heap -s')
         foreach ($event in @('av','0xc0000374','0xc0000409','bpe')) { $commands += ('sxe -c "' + $capture + '" ' + $event) }
+        # Deliberate debugger-only fault, before workload start; never real history.
+        if ($CaptureSelfTest) { $commands += 'r rip=0' }
         $commands += 'g'
         $commandPath = Join-Path $runDir 'debugger.commands'
         [IO.File]::WriteAllLines($commandPath, $commands)
@@ -74,7 +78,7 @@ try {
         $start.FileName = (Get-Item -LiteralPath $Debugger).FullName
         $symbols = $binaryFile.DirectoryName
         if ($SymbolDirectory) { $symbols += ';' + (Get-Item -LiteralPath $SymbolDirectory).FullName }
-        foreach ($arg in @('-y',$symbols,'-logo',(Join-Path $runDir 'debugger.log'),'-cf',$commandPath,$imagePath)) { $start.ArgumentList.Add($arg) }
+        foreach ($arg in @('-G','-y',$symbols,'-logo',(Join-Path $runDir 'debugger.log'),'-cf',$commandPath,$imagePath)) { $start.ArgumentList.Add($arg) }
     } else { $start.FileName = $imagePath }
     foreach ($arg in $arguments) { $start.ArgumentList.Add($arg) }
     $process = [Diagnostics.Process]::Start($start)
@@ -101,7 +105,8 @@ try {
     [IO.File]::WriteAllText((Join-Path $runDir 'stderr.log'),$stderr.GetAwaiter().GetResult())
     if ($PageHeap) {
         $log = Get-Content -LiteralPath (Join-Path $runDir 'debugger.log') -Raw
-        $verified = $log -match '02000000' -and $log -match 'Page heap has been enabled'
+        $verified = $log -match 'Current NtGlobalFlag contents: 0x02000000' -and
+            ($log -match 'Page heap has been enabled' -or $log -match 'Page heap: pid 0x[0-9A-Fa-f]+: page heap enabled with flags 0x2\.')
         if ($log -match '(?m)^PROJECTION_NATIVE_FAULT\r?$') { $reason = 'native-fault' }
         if (-not $verified -and -not $reason) { $reason = 'pageheap-not-verified' }
     }
@@ -128,7 +133,8 @@ try {
         if ($key) { $key.Dispose() }
         $root.Dispose()
     }
-    $summary = @{reason=$reason;exitCode=$exitCode;pageHeapRequested=[bool]$PageHeap;pageHeapVerified=$verified;settingsRestored=$restored;peakSampledPrivateBytes=$peak;runDirectory=$runDir;nativeCrashReproduced=($reason -eq 'native-fault')}
+    $dump = Get-Item -LiteralPath (Join-Path $runDir 'first-fault.dmp') -ErrorAction SilentlyContinue
+    $summary = @{reason=$reason;exitCode=$exitCode;pageHeapRequested=[bool]$PageHeap;pageHeapVerified=$verified;settingsRestored=$restored;peakSampledPrivateBytes=$peak;runDirectory=$runDir;captureSelfTest=[bool]$CaptureSelfTest;nativeStopObserved=($reason -eq 'native-fault');dumpSaved=($null -ne $dump -and $dump.Length -gt 0);nativeCrashReproduced=($reason -eq 'native-fault' -and -not $CaptureSelfTest)}
     $summary | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDir 'supervisor-result.json')
     $summary | ConvertTo-Json
     if ($process) { $process.Dispose() }

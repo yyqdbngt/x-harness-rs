@@ -49,6 +49,13 @@ inspect the exception and stack. This is **PageHeap**, not a claim that every
 Application Verifier test suite is enabled. Other verifier suites can be added
 later if the failure points to a specific API contract.
 
+Optional `-Synthetic -PageHeap -CaptureSelfTest` intentionally sets the isolated
+debuggee's instruction pointer to zero before workload start. It must terminate
+with `native-fault` and create a readable dump; this validates capture plumbing,
+**not reproduction of the application bug**. It is rejected with real journals.
+The supervisor records `captureSelfTest=true` and does not count it as an actual
+reproduction. Do not use this option for normal stress runs.
+
 The helper removes only its owned, previously absent image entry on completion
 or lease expiry. The supervisor verifies its absence. If interrupted, create the
 run directory's `pageheap.stop` marker and let the helper finish. If the helper
