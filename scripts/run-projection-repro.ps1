@@ -11,7 +11,8 @@ param(
     [ValidateRange(1,3600)][int]$Seconds = 120,
     [ValidateRange(256,8192)][int]$MemoryLimitMiB = 2048,
     [switch]$PageHeap,
-    [string]$Debugger
+    [string]$Debugger,
+    [string]$SymbolDirectory
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This supervisor is Windows-only' }
@@ -21,6 +22,7 @@ $hash = (Get-FileHash -LiteralPath $binaryFile.FullName).Hash
 if ($expected.mode -ne 'offline-no-host-no-models-no-tools' -or $hash -ne $expected.sha256) { throw 'Offline artifact manifest/hash mismatch' }
 if (-not [IO.Path]::IsPathFullyQualified($OutputRoot) -or -not (Test-Path -LiteralPath $OutputRoot -PathType Container)) { throw 'OutputRoot must be an existing absolute directory' }
 if ($PageHeap -and (-not $Debugger -or -not (Test-Path -LiteralPath $Debugger -PathType Leaf))) { throw 'PageHeap requires a local cdb.exe path' }
+if ($SymbolDirectory -and -not (Test-Path -LiteralPath $SymbolDirectory -PathType Container)) { throw 'Symbols must be a local directory' }
 if ($PSCmdlet.ParameterSetName -eq 'Journal') { $Journal = (Get-Item -LiteralPath $Journal).FullName }
 $runDir = Join-Path $OutputRoot ('projection-repro-' + [guid]::NewGuid().ToString('N'))
 # CDB command files have their own language: prohibit command/quote delimiters.
@@ -70,7 +72,9 @@ try {
     $start.RedirectStandardError = $true
     if ($PageHeap) {
         $start.FileName = (Get-Item -LiteralPath $Debugger).FullName
-        foreach ($arg in @('-y',$binaryFile.DirectoryName,'-logo',(Join-Path $runDir 'debugger.log'),'-cf',$commandPath,$imagePath)) { $start.ArgumentList.Add($arg) }
+        $symbols = $binaryFile.DirectoryName
+        if ($SymbolDirectory) { $symbols += ';' + (Get-Item -LiteralPath $SymbolDirectory).FullName }
+        foreach ($arg in @('-y',$symbols,'-logo',(Join-Path $runDir 'debugger.log'),'-cf',$commandPath,$imagePath)) { $start.ArgumentList.Add($arg) }
     } else { $start.FileName = $imagePath }
     foreach ($arg in $arguments) { $start.ArgumentList.Add($arg) }
     $process = [Diagnostics.Process]::Start($start)

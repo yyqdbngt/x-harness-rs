@@ -40,7 +40,9 @@ privilege level. Never run the whole supervisor as administrator unnecessarily.
 The installed desktop/Host and their registry entries are not targeted.
 
 CDB prints `!gflag` and `!heap -s`; the supervisor requires runtime evidence of
-PageHeap. It stops at the first access violation, heap corruption, fail-fast or
+PageHeap. Supply `-SymbolDirectory D:/local-symbol-cache` when the heap extension
+needs matching local ntdll symbols; the supervisor does not use a symbol server.
+It stops at the first access violation, heap corruption, fail-fast or
 post-startup breakpoint, saves `first-fault.dmp`, and terminates rather than
 continuing a corrupted process. A breakpoint alone is not proof of a memory bug;
 inspect the exception and stack. This is **PageHeap**, not a claim that every
