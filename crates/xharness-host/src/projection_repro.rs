@@ -305,6 +305,57 @@ pub async fn run_cli(args: Vec<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_directory(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "projection-repro-{}-{label}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+    #[test]
+    fn staging_never_changes_original_and_retains_exact_bytes() {
+        let temp = test_directory("preserve");
+        let source = temp.join("source.jsonl");
+        // An incomplete tail must stay intact in the immutable input snapshot.
+        let bytes = b"{\"header\":{\"id\":\"session-copy-test\"}}\n{\"incomplete\":";
+        fs::write(&source, bytes).unwrap();
+        let output = temp.join("run");
+        fs::create_dir(&output).unwrap();
+        let (id, hash) = stage(&source, &output).unwrap();
+        assert_eq!(id, "session-copy-test");
+        assert_eq!(hash, format!("{:x}", Sha256::digest(bytes)));
+        let recovery = output.join("store/session-copy-test.jsonl");
+        fs::write(recovery, b"recovery changed only its own copy").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::read(output.join("input.jsonl")).unwrap(), bytes);
+        assert!(stage(&source, &output).is_err());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn staging_rejects_traversal_and_invalid_header_without_source_changes() {
+        let temp = test_directory("reject");
+        for (index, bytes) in [
+            b"{\"header\":{\"id\":\"../outside\"}}\n".as_slice(),
+            b"not-json\n".as_slice(),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let source = temp.join(format!("input-{index}"));
+            let output = temp.join(format!("run-{index}"));
+            fs::write(&source, bytes).unwrap();
+            fs::create_dir(&output).unwrap();
+            assert!(stage(&source, &output).is_err());
+            assert_eq!(fs::read(source).unwrap(), *bytes);
+        }
+        fs::remove_dir_all(temp).unwrap();
+    }
     #[test]
     fn rejects_unsafe_ids_and_unbounded_options() {
         for id in ["", "../escape", "C:\\outside", "x/y", "."] {

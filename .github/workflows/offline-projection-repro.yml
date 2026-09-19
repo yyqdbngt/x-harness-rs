@@ -38,6 +38,9 @@ jobs:
           Copy-Item target/release/xharness-projection-repro.exe dist/
           Copy-Item target/release/xharness_projection_repro.pdb dist/ -ErrorAction Stop
           @{ source=(git rev-parse HEAD); projectionBaseline='a98d050f10a3f7c3f836d614e79fbf116aeafc8a'; sha256=(Get-FileHash dist/xharness-projection-repro.exe).Hash; rust='1.98.1'; mode='offline-no-host-no-models-no-tools' } | ConvertTo-Json | Set-Content dist/manifest.json
+          ./scripts/test-projection-repro.ps1 -Binary "$pwd/dist/xharness-projection-repro.exe" -Manifest "$pwd/dist/manifest.json"
+          Copy-Item scripts/*projection-repro*.ps1 dist/
+          Copy-Item docs/offline-projection-repro.md dist/
       - uses: actions/upload-artifact@v7
         with:
           name: windows-projection-repro
